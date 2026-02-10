@@ -144,6 +144,10 @@ export class TelegramPollingTrigger implements INodeType {
 	};
 
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
+		const MAX_RETRY_DELAY_MS = 30_000;
+		const BASE_RETRY_DELAY_MS = 1_000;
+		const LONG_POLL_GRACE_SECONDS = 15;
+
 		const credentials = await this.getCredentials('telegramApi');
 
 		const limit = this.getNodeParameter('limit') as number;
@@ -159,8 +163,53 @@ export class TelegramPollingTrigger implements INodeType {
 
 		const abortController = new AbortController();
 
+		const sleep = async (ms: number) => {
+			if (!isPolling || ms <= 0) {
+				return;
+			}
+
+			let remaining = ms;
+			while (isPolling && remaining > 0) {
+				const chunk = Math.min(remaining, 500);
+				await new Promise<void>((resolve) => setTimeout(resolve, chunk));
+				remaining -= chunk;
+			}
+		};
+
+		const shouldRetry = (error: { code?: string; message?: string; response?: { status?: number } }) => {
+			if (!isPolling) {
+				return false;
+			}
+
+			const retryableErrorCodes = new Set([
+				'ETIMEDOUT',
+				'ECONNRESET',
+				'ECONNREFUSED',
+				'EHOSTUNREACH',
+				'ENETUNREACH',
+				'EAI_AGAIN',
+				'ECONNABORTED',
+			]);
+
+			if (error.code && retryableErrorCodes.has(error.code)) {
+				return true;
+			}
+
+			if (error.message?.toLowerCase().includes('socket hang up')) {
+				return true;
+			}
+
+			const status = error.response?.status;
+			if (status !== undefined && (status === 429 || status >= 500)) {
+				return true;
+			}
+
+			return false;
+		};
+
 		const startPolling = async () => {
 			let offset = 0;
+			let consecutiveErrors = 0;
 
 			while (isPolling) {
 				// try-catch to handle 409s that on >v1.0 bring down the entire instance
@@ -175,10 +224,12 @@ export class TelegramPollingTrigger implements INodeType {
 							allowed_updates: allowedUpdates,
 						},
 						json: true,
-						timeout: 0,
+						timeout: (timeout + LONG_POLL_GRACE_SECONDS) * 1000,
 						// dows this work? maybe it isn't passed to Axtios, there's a trnslation step made by N8N in the middle
 						signal: abortController.signal,
 					})) as ApiResponse<Update[]>;
+
+					consecutiveErrors = 0;
 
 					if (!response.ok || !response.result) {
 						continue;
@@ -197,6 +248,18 @@ export class TelegramPollingTrigger implements INodeType {
 						this.emit([updates.map((update) => ({ json: update as unknown as IDataObject }))]);
 					}
 				} catch (error) {
+					if (shouldRetry(error)) {
+						consecutiveErrors += 1;
+
+						const retryDelay = Math.min(
+							MAX_RETRY_DELAY_MS,
+							BASE_RETRY_DELAY_MS * 2 ** Math.min(consecutiveErrors, 8),
+						);
+
+						await sleep(retryDelay);
+						continue;
+					}
+
 					// 409s sometimes happen when saving changes, b/c that disables+reenables the WF
 					// In N8N >1.0.0 or if using execution_mode=main, that brings down the entire N8N instance
 					// so we need to ignore those errors
