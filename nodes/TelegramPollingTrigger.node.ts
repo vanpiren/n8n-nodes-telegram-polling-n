@@ -1,6 +1,6 @@
 /* eslint-disable n8n-nodes-base/node-dirname-against-convention */
 import { ITriggerFunctions } from 'n8n-core';
-import { IDataObject, INodeType, INodeTypeDescription, ITriggerResponse } from 'n8n-workflow';
+import { IDataObject, INodeType, INodeTypeDescription, ITriggerResponse, NodeOperationError } from 'n8n-workflow';
 import { ApiResponse, Update } from 'typegram';
 
 export class TelegramPollingTrigger implements INodeType {
@@ -147,6 +147,7 @@ export class TelegramPollingTrigger implements INodeType {
 		const MAX_RETRY_DELAY_MS = 30_000;
 		const BASE_RETRY_DELAY_MS = 1_000;
 		const LONG_POLL_GRACE_SECONDS = 15;
+		const MAX_BACKOFF_EXPONENT = 8;
 
 		const credentials = await this.getCredentials('telegramApi');
 
@@ -207,6 +208,13 @@ export class TelegramPollingTrigger implements INodeType {
 			return false;
 		};
 
+		const getRetryDelay = (consecutiveErrors: number) => {
+			const backoff = BASE_RETRY_DELAY_MS * 2 ** Math.min(consecutiveErrors, MAX_BACKOFF_EXPONENT);
+			const jitterMultiplier = 0.8 + Math.random() * 0.4;
+
+			return Math.min(MAX_RETRY_DELAY_MS, Math.floor(backoff * jitterMultiplier));
+		};
+
 		const startPolling = async () => {
 			let offset = 0;
 			let consecutiveErrors = 0;
@@ -231,7 +239,23 @@ export class TelegramPollingTrigger implements INodeType {
 
 					consecutiveErrors = 0;
 
-					if (!response.ok || !response.result) {
+					if (!response.ok) {
+						const statusCode = (response as unknown as IDataObject).error_code as number | undefined;
+						const description = (response as unknown as IDataObject).description as string | undefined;
+
+						if (statusCode !== undefined && (statusCode === 429 || statusCode >= 500)) {
+							consecutiveErrors += 1;
+							await sleep(getRetryDelay(consecutiveErrors));
+							continue;
+						}
+
+						throw new NodeOperationError(
+							this.getNode(),
+							`Telegram getUpdates error${statusCode ? ` ${statusCode}` : ''}${description ? `: ${description}` : ''}`,
+						);
+					}
+
+					if (!response.result) {
 						continue;
 					}
 
@@ -251,12 +275,7 @@ export class TelegramPollingTrigger implements INodeType {
 					if (shouldRetry(error)) {
 						consecutiveErrors += 1;
 
-						const retryDelay = Math.min(
-							MAX_RETRY_DELAY_MS,
-							BASE_RETRY_DELAY_MS * 2 ** Math.min(consecutiveErrors, 8),
-						);
-
-						await sleep(retryDelay);
+						await sleep(getRetryDelay(consecutiveErrors));
 						continue;
 					}
 
@@ -277,7 +296,11 @@ export class TelegramPollingTrigger implements INodeType {
 			}
 		};
 
-		startPolling();
+		startPolling().catch((error) => {
+			if (isPolling) {
+				console.error('Telegram polling failed and stopped:', error);
+			}
+		});
 
 		const closeFunction = async () => {
 			isPolling = false;
