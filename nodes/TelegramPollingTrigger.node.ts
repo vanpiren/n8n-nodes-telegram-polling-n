@@ -1,6 +1,6 @@
 /* eslint-disable n8n-nodes-base/node-dirname-against-convention */
 import { ITriggerFunctions } from 'n8n-core';
-import { IDataObject, INodeType, INodeTypeDescription, ITriggerResponse } from 'n8n-workflow';
+import { IDataObject, INodeType, INodeTypeDescription, ITriggerResponse, NodeOperationError } from 'n8n-workflow';
 import { ApiResponse, Update } from 'typegram';
 
 export class TelegramPollingTrigger implements INodeType {

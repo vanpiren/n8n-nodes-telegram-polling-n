@@ -1,6 +1,6 @@
 {
-  "name": "n8n-nodes-telegram-polling",
-  "version": "0.1.1",
+  "name": "n8n-nodes-telegram-polling-n",
+  "version": "0.1.2",
   "description": "n8n-node-trigger for telegram based on polling api",
   "keywords": [
     "n8n-community-node-package",
@@ -10,12 +10,12 @@
   "license": "MIT",
   "homepage": "",
   "author": {
-    "name": "bergi9",
+    "name": "bergi9/vanpiren",
     "email": ""
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/bergi9/n8n-nodes-telegram-polling.git"
+    "url": "https://github.com/vanpiren/n8n-nodes-telegram-polling-n.git"
   },
   "main": "index.js",
   "scripts": {
