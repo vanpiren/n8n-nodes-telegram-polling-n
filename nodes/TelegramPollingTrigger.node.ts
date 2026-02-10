@@ -5,14 +5,14 @@ import { ApiResponse, Update } from 'typegram';
 
 export class TelegramPollingTrigger implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Telegram Trigger (long polling) Trigger',
-		name: 'telegramPollingTrigger',
+		displayName: 'Telegram Trigger (long polling) Trigger (new)',
+		name: 'telegramPollingTriggerNew',
 		icon: 'file:telegram.svg',
 		group: ['trigger'],
 		version: 1,
 		description: 'Starts the workflow on a Telegram update via long polling',
 		defaults: {
-			name: 'Telegram Trigger',
+			name: 'Telegram Trigger (new)',
 		},
 		inputs: [],
 		outputs: ['main'],
