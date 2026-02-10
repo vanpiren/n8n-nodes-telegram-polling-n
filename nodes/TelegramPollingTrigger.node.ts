@@ -148,6 +148,7 @@ export class TelegramPollingTrigger implements INodeType {
 		const BASE_RETRY_DELAY_MS = 1_000;
 		const LONG_POLL_GRACE_SECONDS = 15;
 		const MAX_BACKOFF_EXPONENT = 8;
+		const NON_RETRYABLE_ERROR_DELAY_MS = 60_000;
 
 		const credentials = await this.getCredentials('telegramApi');
 
@@ -164,6 +165,18 @@ export class TelegramPollingTrigger implements INodeType {
 
 		const abortController = new AbortController();
 
+		type PollingError = {
+			code?: string;
+			message?: string;
+			name?: string;
+			response?: { status?: number };
+		};
+
+		const isAbortError = (error: PollingError) => {
+			const errorMessage = error.message?.toLowerCase() ?? '';
+
+			return error.name === 'AbortError' || error.code === 'ABORT_ERR' || errorMessage.includes('aborted');
+		};
 		const sleep = async (ms: number) => {
 			if (!isPolling || ms <= 0) {
 				return;
@@ -177,26 +190,27 @@ export class TelegramPollingTrigger implements INodeType {
 			}
 		};
 
-		const shouldRetry = (error: { code?: string; message?: string; response?: { status?: number } }) => {
+		const retryableErrorCodes = new Set([
+			'ETIMEDOUT',
+			'ECONNRESET',
+			'ECONNREFUSED',
+			'EHOSTUNREACH',
+			'ENETUNREACH',
+			'EAI_AGAIN',
+			'ECONNABORTED',
+		]);
+
+		const shouldRetry = (error: PollingError) => {
 			if (!isPolling) {
 				return false;
 			}
-
-			const retryableErrorCodes = new Set([
-				'ETIMEDOUT',
-				'ECONNRESET',
-				'ECONNREFUSED',
-				'EHOSTUNREACH',
-				'ENETUNREACH',
-				'EAI_AGAIN',
-				'ECONNABORTED',
-			]);
 
 			if (error.code && retryableErrorCodes.has(error.code)) {
 				return true;
 			}
 
-			if (error.message?.toLowerCase().includes('socket hang up')) {
+			const errorMessage = error.message?.toLowerCase() ?? '';
+			if (errorMessage.includes('socket hang up')) {
 				return true;
 			}
 
@@ -233,7 +247,7 @@ export class TelegramPollingTrigger implements INodeType {
 						},
 						json: true,
 						timeout: (timeout + LONG_POLL_GRACE_SECONDS) * 1000,
-						// dows this work? maybe it isn't passed to Axtios, there's a trnslation step made by N8N in the middle
+						// Keep abort signal to stop in-flight long-poll requests during trigger shutdown
 						signal: abortController.signal,
 					})) as ApiResponse<Update[]>;
 
@@ -249,10 +263,12 @@ export class TelegramPollingTrigger implements INodeType {
 							continue;
 						}
 
-						throw new NodeOperationError(
-							this.getNode(),
-							`Telegram getUpdates error${statusCode ? ` ${statusCode}` : ''}${description ? `: ${description}` : ''}`,
+						consecutiveErrors += 1;
+						console.error(
+							`Telegram getUpdates non-retryable response${statusCode ? ` ${statusCode}` : ''}${description ? `: ${description}` : ''}. Retrying in ${NON_RETRYABLE_ERROR_DELAY_MS}ms.`,
 						);
+						await sleep(NON_RETRYABLE_ERROR_DELAY_MS);
+						continue;
 					}
 
 					if (!response.result) {
@@ -272,26 +288,23 @@ export class TelegramPollingTrigger implements INodeType {
 						this.emit([updates.map((update) => ({ json: update as unknown as IDataObject }))]);
 					}
 				} catch (error) {
-					if (shouldRetry(error)) {
+					const pollingError = error as PollingError;
+
+					if (!isPolling || isAbortError(pollingError)) {
+						continue;
+					}
+
+					if (shouldRetry(pollingError)) {
 						consecutiveErrors += 1;
 
 						await sleep(getRetryDelay(consecutiveErrors));
 						continue;
 					}
-
-					// 409s sometimes happen when saving changes, b/c that disables+reenables the WF
-					// In N8N >1.0.0 or if using execution_mode=main, that brings down the entire N8N instance
-					// so we need to ignore those errors
-					// To prevent other cases of 409s getting eaten, we ONLY ignore 409s where isPolling === false
-					// This means that closeFunction() has been invoked and we're in the middle of cleaning up and exiting
-					if (error.response?.status === 409 && !isPolling) {
-						console.debug('error 409, ignoring because execution is on final cleanup...');
-						continue;
-					}
-
-					// any other errors must be thrown as before, we don't want to
-					// gobble them up
-					throw error;
+					// Any other unexpected error: keep polling alive and retry with backoff
+					consecutiveErrors += 1;
+					console.error('Telegram polling unexpected error, retrying:', pollingError);
+					await sleep(getRetryDelay(consecutiveErrors));
+					continue;
 				}
 			}
 		};
