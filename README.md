@@ -1,14 +1,11 @@
-# n8n-nodes-telegram-polling
+# n8n-nodes-telegram-polling-n
 
 An n8n trigger node for telegram that uses the [getUpdates API](https://core.telegram.org/bots/api#getupdates) to receive updates with long polling.
 
 The default long polling timeout is 60 seconds.
 
-#### Motivation:
-I'm sitting behind a CGNAT for IPv4 but I have an IPv6 Prefix.
-The Telegram webhook method does not support IPv6 yet.
-So the only solution without renting an IPv4 public facing server is to use the long polling method.
-Another alternatives would be to use the tunnel/VPN.
+#### Error connect ETIMEDOUT
+нода для n8n https://github.com/bergi9/n8n-nodes-telegram-polling при простое выдает ошибку connect ETIMEDOUT
 
 ## License
 
